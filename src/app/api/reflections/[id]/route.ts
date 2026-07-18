@@ -1,7 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { db } from "@/db";
-import { reflections, users, likes, comments } from "@/db/schema";
-import { eq } from "drizzle-orm";
+import { getDb } from "@/lib/firebaseAdmin";
 import { getCurrentUser } from "@/lib/auth";
 
 export async function GET(
@@ -10,21 +8,37 @@ export async function GET(
 ) {
   const { id } = await params;
   const currentUser = await getCurrentUser();
+  const db = getDb();
 
-  const [reflection] = await db.select().from(reflections).where(eq(reflections.id, id)).limit(1);
-  if (!reflection) {
+  const doc = await db.collection("reflections").doc(id).get();
+  if (!doc.exists) {
+    return NextResponse.json({ error: "Reflection not found." }, { status: 404 });
+  }
+  const r = doc.data()!;
+
+  if (r.isPrivate && r.userId !== currentUser?.uid) {
     return NextResponse.json({ error: "Reflection not found." }, { status: 404 });
   }
 
-  const [author] = await db.select().from(users).where(eq(users.id, reflection.userId)).limit(1);
-  const likeRows = await db.select().from(likes).where(eq(likes.reflectionId, id));
-  const commentRows = await db.select().from(comments).where(eq(comments.reflectionId, id));
+  const [authorDoc, likedDoc, commentsSnap] = await Promise.all([
+    db.collection("users").doc(r.userId).get(),
+    currentUser
+      ? db.collection("reflections").doc(id).collection("likes").doc(currentUser.uid).get()
+      : Promise.resolve(null),
+    db.collection("reflections").doc(id).collection("comments").orderBy("createdAt", "asc").get(),
+  ]);
 
-  const commentsWithAuthors = await Promise.all(
-    commentRows.map(async (c) => {
-      const [cAuthor] = await db.select().from(users).where(eq(users.id, c.userId)).limit(1);
+  const author = authorDoc.exists ? authorDoc.data()! : null;
+
+  const comments = await Promise.all(
+    commentsSnap.docs.map(async (c) => {
+      const cd = c.data();
+      const cAuthorDoc = await db.collection("users").doc(cd.userId).get();
+      const cAuthor = cAuthorDoc.exists ? cAuthorDoc.data()! : null;
       return {
-        ...c,
+        id: c.id,
+        content: cd.content,
+        createdAt: cd.createdAt,
         author: cAuthor
           ? { username: cAuthor.username, name: cAuthor.name, avatarEmoji: cAuthor.avatarEmoji }
           : null,
@@ -34,7 +48,8 @@ export async function GET(
 
   return NextResponse.json({
     reflection: {
-      ...reflection,
+      id: doc.id,
+      ...r,
       author: author
         ? {
             username: author.username,
@@ -43,10 +58,10 @@ export async function GET(
             currentStreak: author.currentStreak,
           }
         : null,
-      likeCount: likeRows.length,
-      commentCount: commentRows.length,
-      likedByMe: currentUser ? likeRows.some((l) => l.userId === currentUser.id) : false,
-      comments: commentsWithAuthors,
+      likeCount: r.likeCount ?? 0,
+      commentCount: r.commentCount ?? 0,
+      likedByMe: likedDoc ? likedDoc.exists : false,
+      comments,
     },
   });
 }

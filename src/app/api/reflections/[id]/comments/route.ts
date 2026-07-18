@@ -1,9 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
-import { db } from "@/db";
-import { comments, users } from "@/db/schema";
-import { eq } from "drizzle-orm";
+import { getDb } from "@/lib/firebaseAdmin";
+import { FieldValue } from "firebase-admin/firestore";
 import { getCurrentUser } from "@/lib/auth";
-import { randomUUID } from "crypto";
 
 export async function POST(
   req: NextRequest,
@@ -20,21 +18,37 @@ export async function POST(
     return NextResponse.json({ error: "Comment can't be empty." }, { status: 400 });
   }
 
-  const commentId = randomUUID();
-  await db.insert(comments).values({
-    id: commentId,
-    reflectionId: id,
-    userId: currentUser.id,
-    content,
-    createdAt: new Date().toISOString(),
-  });
+  const db = getDb();
+  const reflectionRef = db.collection("reflections").doc(id);
+  const commentRef = reflectionRef.collection("comments").doc();
+  const createdAt = new Date().toISOString();
+
+  try {
+    await db.runTransaction(async (tx) => {
+      const reflectionDoc = await tx.get(reflectionRef);
+      if (!reflectionDoc.exists) {
+        throw new Error("NOT_FOUND");
+      }
+      tx.set(commentRef, {
+        userId: currentUser.uid,
+        content,
+        createdAt,
+      });
+      tx.update(reflectionRef, { commentCount: FieldValue.increment(1) });
+    });
+  } catch (err) {
+    if (err instanceof Error && err.message === "NOT_FOUND") {
+      return NextResponse.json({ error: "Reflection not found." }, { status: 404 });
+    }
+    return NextResponse.json({ error: "Something went wrong posting your comment." }, { status: 500 });
+  }
 
   return NextResponse.json({
     ok: true,
     comment: {
-      id: commentId,
+      id: commentRef.id,
       content,
-      createdAt: new Date().toISOString(),
+      createdAt,
       author: {
         username: currentUser.username,
         name: currentUser.name,
@@ -49,12 +63,21 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
-  const rows = await db.select().from(comments).where(eq(comments.reflectionId, id));
-  const enriched = await Promise.all(
-    rows.map(async (c) => {
-      const [author] = await db.select().from(users).where(eq(users.id, c.userId)).limit(1);
-      return { ...c, author };
+  const db = getDb();
+  const snap = await db
+    .collection("reflections")
+    .doc(id)
+    .collection("comments")
+    .orderBy("createdAt", "asc")
+    .get();
+
+  const comments = await Promise.all(
+    snap.docs.map(async (c) => {
+      const cd = c.data();
+      const authorDoc = await db.collection("users").doc(cd.userId).get();
+      return { id: c.id, ...cd, author: authorDoc.exists ? authorDoc.data() : null };
     })
   );
-  return NextResponse.json({ comments: enriched });
+
+  return NextResponse.json({ comments });
 }

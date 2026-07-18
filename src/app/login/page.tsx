@@ -3,6 +3,9 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
+import { signInWithEmailAndPassword } from "firebase/auth";
+import { clientAuth } from "@/lib/firebaseClient";
+import GoogleSignInButton from "@/components/GoogleSignInButton";
 
 export default function LoginPage() {
   const router = useRouter();
@@ -15,22 +18,28 @@ export default function LoginPage() {
     e.preventDefault();
     setError("");
     setLoading(true);
+
     try {
-      const res = await fetch("/api/auth/login", {
+      const credential = await signInWithEmailAndPassword(clientAuth(), email, password);
+      const idToken = await credential.user.getIdToken();
+
+      const res = await fetch("/api/auth/session", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, password }),
+        body: JSON.stringify({ idToken, mode: "login" }),
       });
       const data = await res.json();
+
       if (!res.ok) {
         setError(data.error || "Something went wrong.");
         setLoading(false);
         return;
       }
+
       router.push("/");
       router.refresh();
-    } catch {
-      setError("Something went wrong. Try again.");
+    } catch (err: unknown) {
+      setError(firebaseErrorMessage(err));
       setLoading(false);
     }
   }
@@ -40,7 +49,17 @@ export default function LoginPage() {
       <h1 className="font-display text-2xl italic text-paper">Welcome back</h1>
       <p className="mt-1 text-sm text-muted">Keep the streak going.</p>
 
-      <form onSubmit={handleSubmit} className="mt-6 flex flex-col gap-4">
+      <div className="mt-6">
+        <GoogleSignInButton />
+      </div>
+
+      <div className="my-5 flex items-center gap-3 text-xs text-muted">
+        <div className="h-px flex-1 bg-line" />
+        or
+        <div className="h-px flex-1 bg-line" />
+      </div>
+
+      <form onSubmit={handleSubmit} className="flex flex-col gap-4">
         <label className="flex flex-col gap-1 text-sm">
           <span className="text-muted">Email</span>
           <input
@@ -80,4 +99,18 @@ export default function LoginPage() {
       </p>
     </div>
   );
+}
+
+function firebaseErrorMessage(err: unknown): string {
+  const code = (err as { code?: string })?.code;
+  switch (code) {
+    case "auth/invalid-credential":
+    case "auth/wrong-password":
+    case "auth/user-not-found":
+      return "Incorrect email or password.";
+    case "auth/too-many-requests":
+      return "Too many attempts. Try again in a bit.";
+    default:
+      return "Something went wrong. Try again.";
+  }
 }

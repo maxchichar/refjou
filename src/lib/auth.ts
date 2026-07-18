@@ -1,34 +1,34 @@
-import bcrypt from "bcryptjs";
-import jwt from "jsonwebtoken";
 import { cookies } from "next/headers";
-import { db } from "@/db";
-import { users } from "@/db/schema";
-import { eq } from "drizzle-orm";
+import { getAdminAuth, getDb } from "@/lib/firebaseAdmin";
 
-const JWT_SECRET = process.env.JWT_SECRET || "dev-secret-change-me-in-production";
 const COOKIE_NAME = "refjou_session";
+const SESSION_EXPIRES_MS = 1000 * 60 * 60 * 24 * 14; // 14 days
 
-export async function hashPassword(password: string) {
-  return bcrypt.hash(password, 10);
-}
+export type SessionUser = {
+  uid: string;
+  username: string;
+  name: string;
+  bio: string;
+  avatarEmoji: string;
+  currentStreak: number;
+  longestStreak: number;
+  freezeTokens: number;
+  lastFreezeGrantWeek: string;
+  lastReflectionDate: string | null;
+};
 
-export async function verifyPassword(password: string, hash: string) {
-  return bcrypt.compare(password, hash);
-}
-
-export function signSession(userId: string) {
-  return jwt.sign({ userId }, JWT_SECRET, { expiresIn: "30d" });
-}
-
-export async function setSessionCookie(userId: string) {
-  const token = signSession(userId);
+/** Exchanges a client-side Firebase ID token for a long-lived httpOnly session cookie. */
+export async function createSessionCookie(idToken: string) {
+  const sessionCookie = await getAdminAuth().createSessionCookie(idToken, {
+    expiresIn: SESSION_EXPIRES_MS,
+  });
   const cookieStore = await cookies();
-  cookieStore.set(COOKIE_NAME, token, {
+  cookieStore.set(COOKIE_NAME, sessionCookie, {
     httpOnly: true,
     secure: process.env.NODE_ENV === "production",
     sameSite: "lax",
     path: "/",
-    maxAge: 60 * 60 * 24 * 30,
+    maxAge: SESSION_EXPIRES_MS / 1000,
   });
 }
 
@@ -37,19 +37,30 @@ export async function clearSessionCookie() {
   cookieStore.delete(COOKIE_NAME);
 }
 
-export async function getCurrentUser() {
+/** Verifies the session cookie and loads the matching Firestore user profile. */
+export async function getCurrentUser(): Promise<SessionUser | null> {
   const cookieStore = await cookies();
-  const token = cookieStore.get(COOKIE_NAME)?.value;
-  if (!token) return null;
+  const sessionCookie = cookieStore.get(COOKIE_NAME)?.value;
+  if (!sessionCookie) return null;
 
   try {
-    const payload = jwt.verify(token, JWT_SECRET) as { userId: string };
-    const [user] = await db
-      .select()
-      .from(users)
-      .where(eq(users.id, payload.userId))
-      .limit(1);
-    return user || null;
+    const decoded = await getAdminAuth().verifySessionCookie(sessionCookie, true);
+    const doc = await getDb().collection("users").doc(decoded.uid).get();
+    if (!doc.exists) return null;
+
+    const data = doc.data()!;
+    return {
+      uid: decoded.uid,
+      username: data.username,
+      name: data.name,
+      bio: data.bio ?? "",
+      avatarEmoji: data.avatarEmoji ?? "🌱",
+      currentStreak: data.currentStreak ?? 0,
+      longestStreak: data.longestStreak ?? 0,
+      freezeTokens: data.freezeTokens ?? 1,
+      lastFreezeGrantWeek: data.lastFreezeGrantWeek ?? "",
+      lastReflectionDate: data.lastReflectionDate ?? null,
+    };
   } catch {
     return null;
   }

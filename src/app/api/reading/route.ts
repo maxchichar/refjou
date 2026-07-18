@@ -1,9 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { db } from "@/db";
-import { currentlyReading } from "@/db/schema";
-import { eq } from "drizzle-orm";
+import { getDb } from "@/lib/firebaseAdmin";
 import { getCurrentUser } from "@/lib/auth";
-import { randomUUID } from "crypto";
 
 export async function POST(req: NextRequest) {
   const currentUser = await getCurrentUser();
@@ -16,16 +13,18 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Enter a book title." }, { status: 400 });
   }
 
-  // One "currently reading" slot per user for simplicity: replace any existing one.
-  await db.delete(currentlyReading).where(eq(currentlyReading.userId, currentUser.id));
-  await db.insert(currentlyReading).values({
-    id: randomUUID(),
-    userId: currentUser.id,
-    title,
-    author: author || "",
-    progressPercent: typeof progressPercent === "number" ? progressPercent : 0,
-    createdAt: new Date().toISOString(),
-  });
+  const db = getDb();
+  // One "currently reading" slot per user for simplicity, keyed by uid.
+  await db
+    .collection("currentlyReading")
+    .doc(currentUser.uid)
+    .set({
+      userId: currentUser.uid,
+      title,
+      author: author || "",
+      progressPercent: typeof progressPercent === "number" ? progressPercent : 0,
+      updatedAt: new Date().toISOString(),
+    });
 
   return NextResponse.json({ ok: true });
 }

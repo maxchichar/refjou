@@ -3,6 +3,9 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
+import { createUserWithEmailAndPassword, updateProfile } from "firebase/auth";
+import { clientAuth } from "@/lib/firebaseClient";
+import GoogleSignInButton from "@/components/GoogleSignInButton";
 
 export default function RegisterPage() {
   const router = useRouter();
@@ -17,22 +20,33 @@ export default function RegisterPage() {
     e.preventDefault();
     setError("");
     setLoading(true);
+
     try {
-      const res = await fetch("/api/auth/register", {
+      // 1. Create the Firebase Auth account client-side.
+      const credential = await createUserWithEmailAndPassword(clientAuth(), email, password);
+      await updateProfile(credential.user, { displayName: name });
+      const idToken = await credential.user.getIdToken();
+
+      // 2. Exchange the ID token for a session cookie + create the Firestore profile.
+      const res = await fetch("/api/auth/session", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name, username, email, password }),
+        body: JSON.stringify({ idToken, mode: "register", name, username }),
       });
       const data = await res.json();
+
       if (!res.ok) {
+        // Roll back: the Auth user was created but the profile wasn't (e.g. username taken).
+        await credential.user.delete().catch(() => {});
         setError(data.error || "Something went wrong.");
         setLoading(false);
         return;
       }
+
       router.push("/new");
       router.refresh();
-    } catch {
-      setError("Something went wrong. Try again.");
+    } catch (err: unknown) {
+      setError(firebaseErrorMessage(err));
       setLoading(false);
     }
   }
@@ -42,7 +56,17 @@ export default function RegisterPage() {
       <h1 className="font-display text-2xl italic text-paper">Join refjou</h1>
       <p className="mt-1 text-sm text-muted">Start your streak today.</p>
 
-      <form onSubmit={handleSubmit} className="mt-6 flex flex-col gap-4">
+      <div className="mt-6">
+        <GoogleSignInButton />
+      </div>
+
+      <div className="my-5 flex items-center gap-3 text-xs text-muted">
+        <div className="h-px flex-1 bg-line" />
+        or
+        <div className="h-px flex-1 bg-line" />
+      </div>
+
+      <form onSubmit={handleSubmit} className="flex flex-col gap-4">
         <Field label="Name">
           <input
             className="w-full rounded bg-surface px-3 py-2 text-paper placeholder:text-muted"
@@ -109,4 +133,18 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
       {children}
     </label>
   );
+}
+
+function firebaseErrorMessage(err: unknown): string {
+  const code = (err as { code?: string })?.code;
+  switch (code) {
+    case "auth/email-already-in-use":
+      return "An account with that email already exists.";
+    case "auth/weak-password":
+      return "Password must be at least 6 characters.";
+    case "auth/invalid-email":
+      return "Enter a valid email address.";
+    default:
+      return "Something went wrong. Try again.";
+  }
 }
