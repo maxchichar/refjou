@@ -5,7 +5,7 @@ import ReflectionCard from "@/components/ReflectionCard";
 
 export default async function HomePage() {
   const currentUser = await getCurrentUser();
-  const reflections = await getEnrichedReflections({ currentUserId: currentUser?.id ?? null });
+  const reflections = await getEnrichedReflections({ currentUserId: currentUser?.uid ?? null });
 
   return (
     <div className="mx-auto max-w-2xl px-4 py-8">
@@ -15,7 +15,7 @@ export default async function HomePage() {
         </h1>
         <p className="mt-2 text-muted">
           A one-a-day journal, out loud. Log what you did, what you&apos;re proud of, and what
-          you&apos;ll improve, then watch the streak build.
+          you&apos;ll improve then watch the streak build.
         </p>
         {!currentUser && (
           <Link

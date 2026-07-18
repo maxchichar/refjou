@@ -1,7 +1,5 @@
 import { notFound } from "next/navigation";
-import { db } from "@/db";
-import { users, currentlyReading, follows } from "@/db/schema";
-import { eq, and } from "drizzle-orm";
+import { getDb } from "@/lib/firebaseAdmin";
 import { getCurrentUser } from "@/lib/auth";
 import { getEnrichedReflections } from "@/lib/feed";
 import ReflectionCard from "@/components/ReflectionCard";
@@ -15,32 +13,28 @@ export default async function ProfilePage({
 }) {
   const { username } = await params;
   const currentUser = await getCurrentUser();
+  const db = getDb();
 
-  const [profileUser] = await db.select().from(users).where(eq(users.username, username)).limit(1);
-  if (!profileUser) notFound();
+  const usernameDoc = await db.collection("usernames").doc(username).get();
+  if (!usernameDoc.exists) notFound();
+  const profileUid = usernameDoc.data()!.uid as string;
 
-  const isOwnProfile = currentUser?.id === profileUser.id;
+  const profileDoc = await db.collection("users").doc(profileUid).get();
+  if (!profileDoc.exists) notFound();
+  const profileUser = profileDoc.data()!;
 
-  const [reading] = await db
-    .select()
-    .from(currentlyReading)
-    .where(eq(currentlyReading.userId, profileUser.id))
-    .limit(1);
+  const isOwnProfile = currentUser?.uid === profileUid;
 
-  let isFollowing = false;
-  if (currentUser && !isOwnProfile) {
-    const rows = await db
-      .select()
-      .from(follows)
-      .where(and(eq(follows.followerId, currentUser.id), eq(follows.followingId, profileUser.id)))
-      .limit(1);
-    isFollowing = rows.length > 0;
-  }
+  const [readingDoc, followDoc, reflections] = await Promise.all([
+    db.collection("currentlyReading").doc(profileUid).get(),
+    currentUser && !isOwnProfile
+      ? db.collection("follows").doc(`${currentUser.uid}_${profileUid}`).get()
+      : Promise.resolve(null),
+    getEnrichedReflections({ authorUsername: username, currentUserId: currentUser?.uid ?? null }),
+  ]);
 
-  const reflections = await getEnrichedReflections({
-    authorUsername: username,
-    currentUserId: currentUser?.id ?? null,
-  });
+  const reading = readingDoc.exists ? readingDoc.data()! : null;
+  const isFollowing = followDoc ? followDoc.exists : false;
 
   return (
     <div className="mx-auto max-w-2xl px-4 py-8">
@@ -58,9 +52,9 @@ export default async function ProfilePage({
       </div>
 
       <div className="mt-5 grid grid-cols-3 gap-3 text-center">
-        <Stat label="Current streak" value={`🔥 ${profileUser.currentStreak}`} />
-        <Stat label="Longest streak" value={`${profileUser.longestStreak}`} />
-        <Stat label="Freeze tokens" value={`🧊 ${profileUser.freezeTokens}`} />
+        <Stat label="Current streak" value={`🔥 ${profileUser.currentStreak ?? 0}`} />
+        <Stat label="Longest streak" value={`${profileUser.longestStreak ?? 0}`} />
+        <Stat label="Freeze tokens" value={`🧊 ${profileUser.freezeTokens ?? 0}`} />
       </div>
 
       <div className="mt-5">
@@ -68,7 +62,11 @@ export default async function ProfilePage({
           isOwnProfile={isOwnProfile}
           initial={
             reading
-              ? { title: reading.title, author: reading.author || "", progressPercent: reading.progressPercent || 0 }
+              ? {
+                  title: reading.title,
+                  author: reading.author || "",
+                  progressPercent: reading.progressPercent || 0,
+                }
               : null
           }
         />

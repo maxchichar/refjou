@@ -64,7 +64,7 @@ export default function NewReflectionPage() {
             className="min-h-32 w-full rounded bg-surface px-3 py-2 text-paper placeholder:text-muted"
             value={content}
             onChange={(e) => setContent(e.target.value)}
-            placeholder="Walk through your day, what you did, how you felt, what stood out."
+            placeholder="Walk through your day, what you did, how you felt and what stood out."
             required
           />
         </label>

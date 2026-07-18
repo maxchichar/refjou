@@ -1,7 +1,5 @@
 import { notFound } from "next/navigation";
-import { db } from "@/db";
-import { reflections, users, comments as commentsTable } from "@/db/schema";
-import { eq } from "drizzle-orm";
+import { getDb } from "@/lib/firebaseAdmin";
 import { getCurrentUser } from "@/lib/auth";
 import { getEnrichedReflections } from "@/lib/feed";
 import ReflectionCard from "@/components/ReflectionCard";
@@ -14,50 +12,69 @@ export default async function ReflectionPage({
 }) {
   const { id } = await params;
   const currentUser = await getCurrentUser();
+  const db = getDb();
 
-  const [reflection] = await db.select().from(reflections).where(eq(reflections.id, id)).limit(1);
-  if (!reflection) notFound();
+  const doc = await db.collection("reflections").doc(id).get();
+  if (!doc.exists) notFound();
+  const reflection = doc.data()!;
 
-  if (reflection.isPrivate && reflection.userId !== currentUser?.id) {
+  if (reflection.isPrivate && reflection.userId !== currentUser?.uid) {
     notFound();
   }
 
-  const [enriched] = await getEnrichedReflections({ currentUserId: currentUser?.id ?? null }).then(
-    async (list) => {
-      const found = list.find((r) => r.id === id);
-      if (found) return [found];
-      // Fallback for private entries viewed by their owner (not in public feed list)
-      const [author] = await db.select().from(users).where(eq(users.id, reflection.userId)).limit(1);
-      return [
-        {
-          ...reflection,
-          author: author
-            ? {
-                username: author.username,
-                name: author.name,
-                avatarEmoji: author.avatarEmoji,
-                currentStreak: author.currentStreak,
-              }
-            : null,
-          likeCount: 0,
-          commentCount: 0,
-          likedByMe: false,
-        },
-      ];
-    }
-  );
+  const publicFeed = await getEnrichedReflections({ currentUserId: currentUser?.uid ?? null });
+  let enriched = publicFeed.find((r) => r.id === id);
 
-  const commentRows = await db
-    .select()
-    .from(commentsTable)
-    .where(eq(commentsTable.reflectionId, id));
+  if (!enriched) {
+    // Private entry viewed by its owner won't be in the public feed list above.
+    const authorDoc = await db.collection("users").doc(reflection.userId).get();
+    const author = authorDoc.exists ? authorDoc.data()! : null;
+    const likedDoc = currentUser
+      ? await db.collection("reflections").doc(id).collection("likes").doc(currentUser.uid).get()
+      : null;
+
+    enriched = {
+      id,
+      userId: reflection.userId,
+      date: reflection.date,
+      content: reflection.content,
+      proudOf: reflection.proudOf ?? "",
+      improveTomorrow: reflection.improveTomorrow ?? "",
+      meditated: Boolean(reflection.meditated),
+      mood: reflection.mood ?? 3,
+      isPrivate: Boolean(reflection.isPrivate),
+      usedFreeze: Boolean(reflection.usedFreeze),
+      createdAt: reflection.createdAt,
+      likeCount: reflection.likeCount ?? 0,
+      commentCount: reflection.commentCount ?? 0,
+      likedByMe: likedDoc ? likedDoc.exists : false,
+      author: author
+        ? {
+            username: author.username,
+            name: author.name,
+            avatarEmoji: author.avatarEmoji,
+            currentStreak: author.currentStreak,
+          }
+        : null,
+    };
+  }
+
+  const commentsSnap = await db
+    .collection("reflections")
+    .doc(id)
+    .collection("comments")
+    .orderBy("createdAt", "asc")
+    .get();
+
   const commentsWithAuthors = await Promise.all(
-    commentRows.map(async (c) => {
-      const [author] = await db.select().from(users).where(eq(users.id, c.userId)).limit(1);
+    commentsSnap.docs.map(async (c) => {
+      const cd = c.data();
+      const authorDoc = await db.collection("users").doc(cd.userId).get();
+      const author = authorDoc.exists ? authorDoc.data()! : null;
       return {
         id: c.id,
-        content: c.content,
-        createdAt: c.createdAt,
+        content: cd.content,
+        createdAt: cd.createdAt,
         author: author
           ? { username: author.username, name: author.name, avatarEmoji: author.avatarEmoji }
           : null,
